@@ -1,0 +1,32 @@
+{
+ "filters": [
+    {
+        "name": "date_granularity",
+        "input_type": "radio",
+        "options": ["date_day", "date_week", "date_month", "date_quarter", "date_year"],
+        "default_value": "date_week"
+    },
+    {
+        "name": "measure",
+        "input_type": "radio",
+        "options": ["activity_days_count", "total_distance", "total_moving_time", "total_suffer_score"],
+        "default_value": "total_distance"
+    },
+    {
+        "name": "type",
+        "input_type": "multiselect",
+        "query": "SELECT DISTINCT type FROM `strava-exploration-v2.strava_prod.fct_daily_metrics`",
+        "default_value": "Run"
+    },
+    {
+        "name": "distance_type",
+        "input_type": "multiselect",
+        "query": "SELECT DISTINCT distance_type FROM `strava-exploration-v2.strava_prod.fct_daily_metrics`"
+    },
+    {
+        "name": "workout_type",
+        "input_type": "multiselect",
+        "query": "SELECT DISTINCT workout_type FROM `strava-exploration-v2.strava_prod.fct_daily_metrics`"
+    }
+ ]
+}
