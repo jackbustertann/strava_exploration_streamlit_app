@@ -4,7 +4,7 @@ import streamlit as st
 import json
 import pandas as pd
 from jinja2 import Template
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import plotly.express as px
 
 from google.oauth2 import service_account
@@ -19,7 +19,7 @@ client = bigquery.Client(credentials=credentials)
 # functions
 
 # run a BQ query
-@st.experimental_memo(ttl=600)
+@st.experimental_memo(ttl=0)
 def run_query(query):
 
     # run query
@@ -38,6 +38,23 @@ with open('config.json', 'r') as f:
     config = json.load(f)
 
 st.set_page_config(
+)
+
+last_updated_query = """
+    SELECT MAX(date_day) AS last_updated
+    FROM `strava-exploration-v2.strava_prod.fct_daily_metrics` """
+
+last_updated_date_str = run_query(last_updated_query)[0]['last_updated']
+
+last_updated_date = datetime.strptime(last_updated_date_str, '%Y-%m-%d')
+
+last_updated_date_delta = (datetime.now() - last_updated_date).days
+
+st.metric(
+    label = 'Last Activity Date',
+    value = last_updated_date_str,
+    delta = f'{last_updated_date_delta} days ago',
+    delta_color = "inverse"
 )
 
 st.markdown("# Chart 1: Progress Over Time")
@@ -68,6 +85,8 @@ for filter_dict in filter_dicts:
             if filter_datatype == 'datetime':
 
                 min_value, max_value = datetime.strptime(min_value, "%Y-%m-%d"), datetime.strptime(max_value, "%Y-%m-%d")
+
+                filter_default = max_value - timedelta(days = 365)
 
             filter_options = (min_value, max_value)
 
@@ -110,7 +129,9 @@ for filter_dict in filter_dicts:
 
             filter_input = st.sidebar.slider(
                 f"Select a {filter_name_str}",
-                value = filter_options,
+                min_value = filter_options[0],
+                max_value = filter_options[1],
+                value = (filter_default, filter_options[1]),
                 format="YYYY-MM-DD"
                 )
     
@@ -159,9 +180,13 @@ if n_rows > 0:
 
     query_columns = list(query_df.columns)
 
-    fig = px.bar(query_df, x = query_columns[0], y = query_columns[2], color = query_columns[1])
+    fig = px.bar(
+        query_df, 
+        x = query_columns[0], 
+        y = query_columns[2], 
+        color = query_columns[1])
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig)
 
 else: 
 
