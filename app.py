@@ -19,7 +19,7 @@ client = bigquery.Client(credentials=credentials)
 # functions
 
 # run a BQ query
-@st.experimental_memo(ttl=0)
+@st.experimental_memo(ttl=600)
 def run_query(query):
 
     # run query
