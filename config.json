@@ -8,37 +8,44 @@
     },
     {
         "name": "measure",
-        "input_type": "radio",
-        "options": ["activity_count", "total_distance", "total_elapsed_time", "total_suffer_score"],
+        "input_type": "selectbox",
+        "options": ["activity_count", "total_distance", "total_moving_time", "total_suffer_score"],
+        "aliases": ["", "km", "'", ""],
         "default_value": "total_distance"
     },
     {
         "name": "dimension",
-        "input_type": "radio",
+        "input_type": "selectbox",
         "options": ["sport", "distance_type", "workout_type"],
         "default_value": "distance_type"
     },
     {
         "name": "date_range",
         "input_type": "slider",
-        "query": "SELECT MIN(date_day) AS min_value, MAX(date_day) AS max_value FROM `strava-exploration-v2.strava_dev.fct_daily_metrics`",
+        "query": "SELECT MIN(date_day) AS min_value, MAX(date_day) AS max_value FROM `strava-exploration-v2.strava_prod.fct_daily_metrics`",
         "datatype": "datetime"
     },
     {
         "name": "sport",
         "input_type": "multiselect",
-        "query": "SELECT DISTINCT sport FROM `strava-exploration-v2.strava_dev.fct_daily_metrics`",
+        "options": ["Run", "Ride"],
         "default_value": "Run"
     },
     {
         "name": "distance_type",
         "input_type": "multiselect",
-        "query": "SELECT DISTINCT distance_type FROM `strava-exploration-v2.strava_dev.fct_daily_metrics`"
+        "query": "SELECT DISTINCT distance_type FROM `strava-exploration-v2.strava_prod.fct_daily_metrics` ORDER BY distance_type"
     },
     {
         "name": "workout_type",
         "input_type": "multiselect",
-        "query": "SELECT DISTINCT workout_type FROM `strava-exploration-v2.strava_dev.fct_daily_metrics`"
+        "query": "SELECT DISTINCT workout_type FROM `strava-exploration-v2.strava_prod.fct_daily_metrics` ORDER BY workout_type"
+    },
+    {
+        "name": "zone_type",
+        "input_type": "selectbox",
+        "options": ["heartrate", "pace"],
+        "default_value": "heartrate"
     }
  ]
 }
