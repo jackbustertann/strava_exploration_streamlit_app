@@ -3,9 +3,11 @@ import streamlit as st
 
 import json
 import pandas as pd
+import numpy as np
 from jinja2 import Template
 from datetime import datetime, date, timedelta
 import plotly.express as px
+import plotly.graph_objects as go
 
 from google.oauth2 import service_account
 from google.cloud import bigquery
@@ -16,10 +18,9 @@ credentials = service_account.Credentials.from_service_account_info(
 )
 client = bigquery.Client(credentials=credentials)
 
-# functions
+st.set_page_config()
 
-# run a BQ query
-@st.experimental_memo(ttl=600)
+# functions
 def run_query(query):
 
     # run query
@@ -31,304 +32,365 @@ def run_query(query):
     # convert result into a list of dicts
     rows = [dict(row) for row in rows_raw]
 
-    return rows
+    return pd.DataFrame(rows)
 
-# reading config file
-with open('config.json', 'r') as f:
-    config = json.load(f)
+def convert_mins_to_HHMM(
+    time_in_mins: int
+):
+    hours = int(np.floor(time_in_mins / 60))
+    mins = time_in_mins - (hours * 60)
+    return "{:02d}:{:02d}".format(hours, mins)
 
-st.set_page_config(
-)
-
-last_updated_query = """
-    SELECT MAX(date_day) AS last_updated
-    FROM `strava-exploration-v2.strava_prod.fct_daily_metrics` """
-
-last_updated_date_str = run_query(last_updated_query)[0]['last_updated']
-
-last_updated_date = datetime.strptime(last_updated_date_str, '%Y-%m-%d')
-
-last_updated_date_delta = (datetime.now() - last_updated_date).days
-
-st.metric(
-    label = 'Last Activity Date',
-    value = last_updated_date_str,
-    delta = f'{last_updated_date_delta} days ago',
-    delta_color = "inverse"
-)
-
-is_percent = st.checkbox('Convert to Percent', False)
-
-st.markdown("## Chart 1: Training Volume and Load")
-
-filter_dicts = config['filters']
-
-filter_inputs = {}
-for filter_dict in filter_dicts:
-
-    filter_name = filter_dict['name']
-    filter_input_type = filter_dict['input_type']
-    filter_query = filter_dict.get('query', None)
-    filter_default = filter_dict.get('default_value', None)
-    filter_datatype = filter_dict.get('datatype', None)
-
-    if filter_query is not None:
-
-        if filter_input_type in ['multiselect', 'radio', 'selectbox']:
-
-            filter_options = [option[filter_name] for option in run_query(filter_query)]
-        
-        elif filter_input_type == 'slider':
-
-            query_df = pd.DataFrame(run_query(filter_query))
-
-            min_value, max_value = query_df.loc[0, 'min_value'], query_df.loc[0, 'max_value']
-
-            if filter_datatype == 'datetime':
-
-                min_value, max_value = datetime.strptime(min_value, "%Y-%m-%d"), datetime.strptime(max_value, "%Y-%m-%d")
-
-                filter_default = max_value - timedelta(days = 365)
-
-            filter_options = (min_value, max_value)
-
+def format_rank(
+    rank: int
+):
+    rank_str = str(rank)
+    if (rank_str[-1] == '1') & (rank != 11):
+        return rank_str + 'st'
+    elif (rank_str[-1] == '2') & (rank != 12):
+        return rank_str + 'nd'
+    elif (rank_str[-1] == '3') & (rank != 13):
+        return rank_str + 'rd'
     else:
+        return rank_str + 'th'
 
-        filter_options = filter_dict['options']
+# Initiate app
+st.title("Strava Web App :runner:")
 
-    filter_name_str = filter_name.replace('_', ' ').capitalize()
-
-    if filter_input_type == 'multiselect':
-
-        if filter_default is not None:
-
-            filter_input = st.sidebar.multiselect(
-                f'Pick a {filter_name_str}',
-                filter_options,
-                filter_default
-                )
-        else:
-
-            filter_input = st.sidebar.multiselect(
-                f'Pick a {filter_name_str}',
-                filter_options,
-                filter_options
-                )
-    
-    elif filter_input_type == 'radio':
-
-        filter_default_index = filter_options.index(filter_default)
-
-        filter_input = st.sidebar.radio(
-            f'Pick a {filter_name_str}',
-            filter_options,
-            filter_default_index
-            )
-    elif filter_input_type == 'selectbox':
-
-        filter_default_index = filter_options.index(filter_default)
-
-        filter_input = st.sidebar.selectbox(
-            f'Pick a {filter_name_str}',
-            filter_options,
-            filter_default_index
-            )
-    
-    elif filter_input_type == 'slider':
-
-        if filter_datatype == 'datetime':
-
-            filter_input = st.sidebar.slider(
-                f"Select a {filter_name_str}",
-                min_value = filter_options[0],
-                max_value = filter_options[1],
-                value = (filter_default, filter_options[1]),
-                format="YYYY-MM-DD"
-                )
-    
-    filter_inputs[filter_name] = filter_input
-
-measure_filter_dict = [filter_dict for filter_dict in filter_dicts if filter_dict['name'] == 'measure'][0]
-measure_options, measure_aliases = measure_filter_dict['options'], measure_filter_dict['aliases']
-
-measure_input = filter_inputs['measure']
-measure_input_index = measure_options.index(measure_input)
-measure_alias = measure_aliases[measure_input_index]
-
-dimension_input = filter_inputs['dimension']
-
-dimension_colors = {
-    "sport": px.colors.qualitative.Plotly, 
-    "distance_type": px.colors.sequential.Purples[-3:],
-    "workout_type": px.colors.sequential.Oranges[-7:]
-    }
-
-dimension_color = dimension_colors[dimension_input]
-
-query_template_1 = Template(
-
+# Run query
+weekly_ride_metrics_query = """
+SELECT * 
+FROM `strava-exploration-v2`.`strava_prod`.`weekly_ride_metrics_wide_to_long`
 """
-{% if is_percent %}
-SELECT 
-{{ filter_inputs['date_granularity'] }}, 
-{{ filter_inputs['dimension'] }},
-{{ filter_inputs['measure'] }} / SUM({{ filter_inputs['measure'] }}) OVER(PARTITION BY {{ filter_inputs['date_granularity'] }}) AS {{ filter_inputs['measure'] }}
-FROM (
-{% endif %}
-    SELECT 
-        {{ filter_inputs['date_granularity'] }}, 
-        {{ filter_inputs['dimension'] }}, 
-        SUM({{ filter_inputs['measure'] }}) AS {{ filter_inputs['measure'] }}
-    FROM `strava-exploration-v2.strava_prod.fct_daily_metrics`
-    WHERE 1 = 1
-    {%- for key, value in filter_inputs.items() -%}
-        {%- if key not in ('date_granularity', 'measure', 'dimension', 'date_range', 'zone_type') -%}
-            {%- if None in value -%}
-                {%- set value_str = value | select('string') | join('", "') -%}
-        AND ( {{ key }} in ("{{ value_str }}") OR {{ key }} IS NULL )
-            {%- else -%}
-                {%- set value_str = value | join('", "') -%}
-        AND {{ key }} in ("{{ value_str }}")
-            {%- endif -%}
-        {%- elif key == 'date_range' -%}
-            {%- set min_date = value[0].strftime('%Y-%m-%d') -%}
-            {%- set max_date = value[1].strftime('%Y-%m-%d') -%}
-        AND CAST(date_day AS DATE) BETWEEN CAST("{{ min_date }}" AS DATE) AND CAST("{{ max_date }}" AS DATE)
-        {%- endif %}
-    {% endfor %}
-    GROUP BY {{ filter_inputs['date_granularity'] }}, {{ filter_inputs['dimension'] }}
-    ORDER BY {{ filter_inputs['date_granularity'] }}, {{ filter_inputs['dimension'] }}
-{% if is_percent %}
-) AS agg_date_values
-ORDER BY {{ filter_inputs['date_granularity'] }}, {{ filter_inputs['dimension'] }}
-{% endif %}
-"""
+
+weekly_ride_metrics_df = run_query(weekly_ride_metrics_query)
+weekly_ride_metrics_df['date_week'] = weekly_ride_metrics_df['date_week'].map(
+    lambda x: datetime.strptime(x, '%Y-%m-%d').date()
 )
 
-query_str_1 = query_template_1.render(
-    filter_inputs = filter_inputs,
-    is_percent = is_percent)
+st.header("Moving Time")
 
-query_df_1 = pd.DataFrame(run_query(query_str_1))
+weekly_moving_time_df = weekly_ride_metrics_df.loc[
+    weekly_ride_metrics_df["metric_name"] == 'moving_time'
+]
 
-n_rows_1 = len(query_df_1)
+week_max = weekly_moving_time_df["date_week"].max()
+week_min = weekly_moving_time_df["date_week"].min()
+moving_time_max = int(np.ceil(weekly_moving_time_df["metric_value"].max()/60) * 60)
+total_weeks = len(weekly_moving_time_df)
 
-if n_rows_1 > 0:
+st.write("Parameters:")
 
-    query_df_1.columns = [col.replace('_', ' ') for col in list(query_df_1.columns)]
+param_col_1, param_col_2, param_col_3 = st.columns([2,1,1])
 
-    query_columns_1 = list(query_df_1.columns)
+with param_col_1:
+    current_week = st.slider(
+        "Current Week:",
+        value=(week_max),
+        max_value=week_max,
+        min_value=week_min + timedelta(weeks = 12),
+        step = timedelta(weeks = 1)
+    )
 
-    fig_1 = px.bar(
-        query_df_1, 
-        x = query_columns_1[0], 
-        y = query_columns_1[2], 
-        color = query_columns_1[1],
-        color_discrete_sequence = dimension_color)
+    current_week_moving_time_df = weekly_moving_time_df.loc[
+        weekly_moving_time_df["date_week"] == current_week
+    ]
 
-    if is_percent:
+    previous_week = current_week - timedelta(weeks = 1)
 
-        fig_1.update_layout(yaxis_tickformat = 'p')
+    previous_week_moving_time_df = weekly_moving_time_df.loc[
+        weekly_moving_time_df["date_week"] == previous_week
+    ]
+
     
-    else:
+with param_col_2:
+    n_weeks = st.number_input(
+            'Number of weeks:', 
+            min_value = 13,
+            max_value = int(((current_week - week_min).days / 7) + 1),
+            value = 13,
+            step = 1
+        )  
+    start_week = current_week - timedelta(weeks = (n_weeks-1))
 
-        fig_1.update_layout(yaxis_ticksuffix = measure_alias)
+    weekly_moving_time_filtered_df = weekly_moving_time_df.loc[
+        (weekly_moving_time_df["date_week"] >= start_week) &
+        (weekly_moving_time_df["date_week"] <= current_week)
+    ].reset_index().drop(columns=["index"]).reset_index()
 
+with param_col_3:
+    y_target = st.number_input(
+            'Target (mins):', 
+            min_value = 0,
+            max_value = 600,
+            value = 300,
+            step = 15
+        )
+
+    weekly_moving_time_filtered_df['is_above_target'] = (
+        weekly_moving_time_filtered_df['metric_value'] >= y_target
+    )
+
+    above_target_weeks = weekly_moving_time_filtered_df['is_above_target'].sum()
+
+    y_target_percent = (above_target_weeks / n_weeks) * 100
+
+st.write("Metrics:")
+
+metric_col_1, metric_col_2, metric_col_3, metric_col_4 = st.columns(4)
+
+with metric_col_1:
+    current_week_moving_time = current_week_moving_time_df['metric_value'].iloc[0]
+
+    current_week_target_delta = int(np.floor(current_week_moving_time - y_target))
+
+    st.metric(
+        "Current Week", 
+        f"{convert_mins_to_HHMM(int(current_week_moving_time))}",
+        f"{int(current_week_target_delta)} mins"
+    )
+
+with metric_col_2:
+
+    current_week_moving_time_6w = current_week_moving_time_df["metric_agg_6w"].iloc[0]
+
+    previous_week_moving_time_6w = previous_week_moving_time_df["metric_agg_6w"].iloc[0]
+
+    current_week_6w_delta = current_week_moving_time_6w - previous_week_moving_time_6w
+    current_week_6w_delta_percent = round((current_week_6w_delta / current_week_moving_time_6w) * 100, 1)
+
+    st.metric(
+        "6W AVG (Short Term)", 
+        f"{convert_mins_to_HHMM(int(current_week_moving_time_6w))}",
+        f"{current_week_6w_delta_percent} %"
+    )
+
+with metric_col_3:
+
+    current_week_moving_time_13w = current_week_moving_time_df["metric_agg_13w"].iloc[0]
+
+    previous_week_moving_time_13w = previous_week_moving_time_df["metric_agg_13w"].iloc[0]
+
+    current_week_13w_delta = current_week_moving_time_13w - previous_week_moving_time_13w
+    current_week_13w_delta_percent = round((current_week_13w_delta / current_week_moving_time_13w) * 100, 1)
+
+    st.metric(
+        "13W AVG (Mid Term)", 
+        f"{convert_mins_to_HHMM(int(current_week_moving_time_13w))}",
+        f"{current_week_13w_delta_percent} %"
+    )
+
+with metric_col_4:
+
+    current_week_moving_time_26w = current_week_moving_time_df["metric_agg_26w"].iloc[0]
+
+    previous_week_moving_time_26w = previous_week_moving_time_df["metric_agg_26w"].iloc[0]
+
+    current_week_26w_delta = current_week_moving_time_26w - previous_week_moving_time_26w
+    current_week_26w_delta_percent = round((current_week_26w_delta / current_week_moving_time_26w) * 100, 1)
+
+    st.metric(
+        "26W AVG (Long Term)",
+        f"{convert_mins_to_HHMM(int(current_week_moving_time_26w))}",
+        f"{current_week_26w_delta_percent} %"
+    )
+
+checkbox_col_1, checkbox_col_2, checkbox_col_3, checkbox_col_4 = st.columns(4)
+
+with checkbox_col_2:
+    checkbox_2 = st.checkbox(
+      label="Show", key="checkbox_2"  
+    )
+
+with checkbox_col_3:
+    checkbox_3 = st.checkbox(
+      label="Show", key="checkbox_3"  
+    )
     
-    st.plotly_chart(fig_1) 
+with checkbox_col_4:
+    checkbox_4 = st.checkbox(
+      label="Show", key="checkbox_4"  
+    )
 
-else: 
+metric_col_21, metric_col_22, metric_col_23, metric_col_24 = st.columns(4)
 
-    st.text('No data to display!')
+with metric_col_21:
+
+    st.metric(
+        "Overall rank:",
+        "N/A"
+    )
+
+    st.checkbox(
+        "Express as %"
+    )
+
+with metric_col_22:
+
+    st.metric(
+        "6W rank (Short Term):",
+        "N/A"
+    )
+
+with metric_col_23:
+
+    st.metric(
+        "13W rank (Mid Term):",
+        "N/A"
+    )
+
+with metric_col_24:
+
+    st.metric(
+        "26W rank (Long Term):",
+        "N/A"
+    )
 
 
-zone_type_input = filter_inputs['zone_type']
-
-zone_type_colors = {
-    "heartrate": px.colors.sequential.Reds[-5:], 
-    "pace": px.colors.sequential.Blues[-6:]
-    }
-
-zone_type_color = zone_type_colors[zone_type_input]
-
-query_template_2 = Template(
-
-"""
-{% if is_percent %}
-SELECT 
-{{ filter_inputs['date_granularity'] }}, 
-zone_index,
-time_in_zone / SUM(time_in_zone) OVER(PARTITION BY {{ filter_inputs['date_granularity'] }}) AS time_in_zone
-FROM (
-{% endif %}
-    SELECT 
-        {{ filter_inputs['date_granularity'] }}, 
-        CAST(zone_index AS STRING) AS zone_index,
-        SUM(time_in_zone) AS time_in_zone
-    FROM `strava-exploration-v2.strava_prod.fct_daily_zones`
-    WHERE 1 = 1
-    {%- for key, value in filter_inputs.items() -%}
-        {%- if key not in ('date_granularity', 'measure', 'dimension', 'date_range') -%}
-            {%- if value is string -%}
-        AND {{ key }} = "{{ value }}"
-                {%- elif None in value -%}
-                    {%- set value_str = value | select('string') | join('", "') -%}
-        AND ( {{ key }} in ("{{ value_str }}") OR {{ key }} IS NULL )
-                {%- else -%}
-                    {%- set value_str = value | join('", "') -%}
-        AND {{ key }} in ("{{ value_str }}")
-            {%- endif -%}
-        {%- elif key == 'date_range' -%}
-            {%- set min_date = value[0].strftime('%Y-%m-%d') -%}
-            {%- set max_date = value[1].strftime('%Y-%m-%d') -%}
-        AND CAST(date_day AS DATE) BETWEEN CAST("{{ min_date }}" AS DATE) AND CAST("{{ max_date }}" AS DATE)
-        {%- endif %}
-    {% endfor %}
-    GROUP BY {{ filter_inputs['date_granularity'] }}, zone_index
-    ORDER BY {{ filter_inputs['date_granularity'] }}, zone_index
-{% if is_percent %}
-) AS agg_date_values
-ORDER BY {{ filter_inputs['date_granularity'] }}, zone_index
-{% endif %}
-"""
+chart_tab_1, chart_tab_2 = st.tabs(
+    ["Weekly View", "Ranked View"]
 )
-
-query_str_2 = query_template_2.render(
-    filter_inputs = filter_inputs,
-    is_percent = is_percent)
-
-st.markdown(f"## Chart 2: Training Intensity ({zone_type_input.capitalize()})")
-
-query_df_2 = pd.DataFrame(run_query(query_str_2))
-
-n_rows_2  = len(query_df_2)
-
-if n_rows_2 > 0:
-
-    query_df_2.columns = [col.replace('_', ' ') for col in list(query_df_2.columns)]
-
-    query_columns_2 = list(query_df_2.columns)
-
-    fig_2 = px.bar(
-        query_df_2, 
-        x = query_columns_2[0], 
-        y = query_columns_2[2], 
-        color = query_columns_2[1],
-        color_discrete_sequence = zone_type_color)
-
-    if is_percent:
-
-        fig_2.update_layout(yaxis_tickformat = 'p')
     
-    else:
-
-        fig_2.update_layout(yaxis_ticksuffix = "'")
+with chart_tab_1:
+    st.markdown(f"I have exceeded a moving time of **{int(y_target)} mins** for **{above_target_weeks} out of {n_weeks} weeks** (**{int(y_target_percent)}%**)")
 
     
-    st.plotly_chart(fig_2) 
+    fig_1a = px.bar(
+        weekly_moving_time_filtered_df.loc[
+            weekly_moving_time_filtered_df['is_above_target']
+        ], 
+        x="date_week", 
+        y="metric_value",
+        color_discrete_sequence = ["#4a8dff"]
+        )
+    fig_1b = px.bar(
+        weekly_moving_time_filtered_df.loc[
+            ~weekly_moving_time_filtered_df['is_above_target']
+        ], 
+        x="date_week", 
+        y="metric_value",
+        color_discrete_sequence = ["#cdddff"]
+        )
+    fig_2 = px.line(
+        weekly_moving_time_filtered_df, 
+        x="date_week", 
+        y="metric_agg_6w",
+        color_discrete_sequence = ["#b5e853"]
+        )
+    fig_3 = px.line(
+        weekly_moving_time_filtered_df, 
+        x="date_week", 
+        y="metric_agg_26w",
+        color_discrete_sequence = ["#b5e853"]
+        )
+    fig_4 = px.line(
+        weekly_moving_time_filtered_df, 
+        x="date_week", 
+        y="metric_agg_26w",
+        color_discrete_sequence = ["#b5e853"]
+        )
+    fig_data = fig_1a.data + fig_1b.data
+    if checkbox_2:
+        fig_data += fig_2.data
+    if checkbox_3:
+        fig_data += fig_3.data
+    if checkbox_4:
+        fig_data += fig_4.data
+    
+    fig = go.Figure(data=fig_data)
+    
+    fig.add_hline(y=y_target, line_dash='dash')
+    
+    fig.update_layout(
+        title = "",
+        xaxis = dict(
+            title="Training Week"
+        ),
+        yaxis = {
+            "title": 'Moving Time (mins)',
+            "tickvals": list(range(0, moving_time_max + 60, 60)),
+            "range": (-15, moving_time_max)
+        },
+        margin = {
+            "t": 0
+        },
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
-else: 
+with chart_tab_2:
 
-    st.text('No data to display!')
+    weekly_moving_time_ranked_df = (
+        weekly_moving_time_filtered_df
+        .sort_values(by = ['metric_value', 'date_week'], ascending = [False, True])
+    )
 
 
+    weekly_moving_time_ranked_df["rank"] = (
+        weekly_moving_time_ranked_df['metric_value']
+        .rank(method="first", ascending = False)
+    )
+
+    max_rank = weekly_moving_time_ranked_df["rank"].max()
+    current_week_rank = weekly_moving_time_ranked_df.loc[
+        weekly_moving_time_ranked_df["date_week"] == current_week
+    ]["rank"].iloc[0]
+    current_week_rank_percent_str = (
+        "top " + str(int(np.ceil((current_week_rank / n_weeks) * 100))) + "%" if current_week_rank <= n_weeks/2
+        else "bottom " + str(int(np.ceil((1 - ((current_week_rank - 1) / n_weeks)) * 100))) + "%"
+    )
+
+    st.markdown(f"My current week moving time of **{int(current_week_moving_time)} mins** ranks **{format_rank(int(current_week_rank))} out of {n_weeks} weeks** (**{current_week_rank_percent_str}**)")
+
+    fig_1a = px.bar(
+        weekly_moving_time_ranked_df.loc[
+            weekly_moving_time_ranked_df["date_week"] == current_week
+        ], 
+        x="rank", 
+        y="metric_value",
+        color_discrete_sequence = ["#4a8dff"]
+        )
+    fig_1b = px.bar(
+        weekly_moving_time_ranked_df.loc[
+            weekly_moving_time_ranked_df["date_week"] != current_week
+        ], 
+        x="rank", 
+        y="metric_value",
+        color_discrete_sequence = ["#cdddff"]
+        )
+
+    fig_data = fig_1a.data + fig_1b.data
+    
+    fig = go.Figure(data=fig_data)
+    
+    fig.add_hline(y=y_target, line_dash='dash')
+
+    xtick_vals = [
+        int(x) for x in np.linspace(start=1, stop=max_rank, num=6)
+    ]
+
+    xtick_labels = [
+        format_rank(x) for x in xtick_vals
+    ]
+    
+    
+    fig.update_layout(
+        title = "",
+        xaxis = dict(
+            title="Rank",
+            tickvals=xtick_vals,
+            ticktext=xtick_labels
+        ),
+        yaxis = {
+            "title": 'Moving Time (mins)',
+            "tickvals": list(range(0, moving_time_max + 60, 60)),
+            "range": (-15, moving_time_max)
+        },
+        margin = {
+            "t": 0
+        },
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
