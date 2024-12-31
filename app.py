@@ -34,11 +34,9 @@
 # imports
 import streamlit as st
 
-import json
 import pandas as pd
 import numpy as np
-from jinja2 import Template
-from datetime import datetime, date, timedelta
+from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 
